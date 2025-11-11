@@ -3,12 +3,13 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use rmcp::model::{CallToolRequestParam, CallToolResult, Content, Tool};
 use rmcp::{Peer, RoleServer};
 use serde_json::{json, Value};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use wassette::LifecycleManager;
 
 use crate::components::{
@@ -60,6 +61,52 @@ fn is_builtin_tool(name: &str) -> bool {
     )
 }
 
+/// Sanitize tool arguments for logging by limiting string length and removing sensitive data
+fn sanitize_args_for_logging(args: &Option<serde_json::Map<String, Value>>) -> String {
+    const MAX_ARG_LENGTH: usize = 200;
+    const MAX_TOTAL_LENGTH: usize = 1000;
+
+    match args {
+        None => "{}".to_string(),
+        Some(map) => {
+            let mut sanitized = serde_json::Map::new();
+            let mut total_length = 0;
+
+            for (key, value) in map {
+                // Skip potentially sensitive keys
+                if key.to_lowercase().contains("password")
+                    || key.to_lowercase().contains("secret")
+                    || key.to_lowercase().contains("token")
+                    || key.to_lowercase().contains("key")
+                {
+                    sanitized.insert(key.clone(), json!("<redacted>"));
+                    continue;
+                }
+
+                // Truncate long string values
+                let sanitized_value = match value {
+                    Value::String(s) if s.len() > MAX_ARG_LENGTH => {
+                        json!(format!("{}... ({} chars)", &s[..MAX_ARG_LENGTH], s.len()))
+                    }
+                    _ => value.clone(),
+                };
+
+                // Check if adding this key-value pair would exceed the total length before insertion
+                // The +20 accounts for JSON overhead (quotes, colons, commas, braces)
+                if total_length + key.len() + 20 > MAX_TOTAL_LENGTH {
+                    sanitized.insert("...".to_string(), json!("(truncated)"));
+                    break;
+                }
+
+                sanitized.insert(key.clone(), sanitized_value);
+                total_length += key.len() + 20;
+            }
+
+            serde_json::to_string(&sanitized).unwrap_or_else(|_| "{}".to_string())
+        }
+    }
+}
+
 /// Handles a tool call request.
 #[instrument(skip_all, fields(method_name = %req.name))]
 pub async fn handle_tools_call(
@@ -68,10 +115,22 @@ pub async fn handle_tools_call(
     server_peer: Peer<RoleServer>,
     disable_builtin_tools: bool,
 ) -> Result<Value> {
-    info!("Handling tool call");
+    let start_time = Instant::now();
+    let tool_name = req.name.to_string();
+    let sanitized_args = sanitize_args_for_logging(&req.arguments);
+
+    debug!(
+        tool_name = %tool_name,
+        arguments = %sanitized_args,
+        "Tool invocation started"
+    );
 
     let result = if disable_builtin_tools && is_builtin_tool(req.name.as_ref()) {
         // When builtin tools are disabled, reject calls to builtin tools
+        warn!(
+            tool_name = %tool_name,
+            "Tool invocation rejected: built-in tools are disabled"
+        );
         Err(anyhow::anyhow!("Built-in tools are disabled"))
     } else {
         // Handle builtin tools (if enabled) or component calls
@@ -116,8 +175,26 @@ pub async fn handle_tools_call(
         }
     };
 
-    if let Err(ref e) = result {
-        error!(error = ?e, "Tool call failed");
+    let duration = start_time.elapsed();
+
+    match &result {
+        Ok(_) => {
+            debug!(
+                tool_name = %tool_name,
+                duration_ms = %duration.as_millis(),
+                outcome = "success",
+                "Tool invocation completed successfully"
+            );
+        }
+        Err(e) => {
+            error!(
+                tool_name = %tool_name,
+                duration_ms = %duration.as_millis(),
+                outcome = "error",
+                error = %e,
+                "Tool invocation failed"
+            );
+        }
     }
 
     match result {
@@ -1172,5 +1249,62 @@ mod tests {
             .contains("Missing required argument: 'component_id'"));
 
         Ok(())
+    }
+
+    #[test]
+    fn test_sanitize_args_for_logging_redacts_sensitive_keys() {
+        let mut args = serde_json::Map::new();
+        args.insert("url".to_string(), json!("https://example.com"));
+        args.insert("api_key".to_string(), json!("secret-key-123"));
+        args.insert("password".to_string(), json!("my-password"));
+        args.insert("token".to_string(), json!("bearer-token"));
+
+        let sanitized = sanitize_args_for_logging(&Some(args));
+
+        assert!(sanitized.contains("\"url\""));
+        assert!(sanitized.contains("https://example.com"));
+        assert!(sanitized.contains("<redacted>"));
+        assert!(!sanitized.contains("secret-key-123"));
+        assert!(!sanitized.contains("my-password"));
+        assert!(!sanitized.contains("bearer-token"));
+    }
+
+    #[test]
+    fn test_sanitize_args_for_logging_truncates_long_strings() {
+        let mut args = serde_json::Map::new();
+        let long_string = "a".repeat(300);
+        args.insert("data".to_string(), json!(long_string));
+
+        let sanitized = sanitize_args_for_logging(&Some(args));
+
+        assert!(sanitized.contains("300 chars"));
+        assert!(!sanitized.contains(&"a".repeat(300)));
+    }
+
+    #[test]
+    fn test_sanitize_args_for_logging_handles_empty() {
+        let sanitized = sanitize_args_for_logging(&None);
+        assert_eq!(sanitized, "{}");
+
+        let empty_args = serde_json::Map::new();
+        let sanitized = sanitize_args_for_logging(&Some(empty_args));
+        assert_eq!(sanitized, "{}");
+    }
+
+    #[test]
+    fn test_sanitize_args_for_logging_preserves_normal_data() {
+        let mut args = serde_json::Map::new();
+        args.insert("name".to_string(), json!("test"));
+        args.insert("count".to_string(), json!(42));
+        args.insert("enabled".to_string(), json!(true));
+
+        let sanitized = sanitize_args_for_logging(&Some(args));
+
+        assert!(sanitized.contains("\"name\""));
+        assert!(sanitized.contains("test"));
+        assert!(sanitized.contains("\"count\""));
+        assert!(sanitized.contains("42"));
+        assert!(sanitized.contains("\"enabled\""));
+        assert!(sanitized.contains("true"));
     }
 }

@@ -2,11 +2,15 @@
 
 - [Overview](./overview.md)
 - [Installation](./installation.md)
-  - [Docker](./deployment/docker.md)
 - [Quick Start](./quick-start.md)
 - [Concepts](./concepts.md)
 - [MCP Clients](./mcp-clients.md)
 - [FAQ](./faq.md)
+
+# Deployment
+
+- [Docker](./deployment/docker.md)
+- [Operations](./deployment/operations.md)
 
 # Developer Guide
 

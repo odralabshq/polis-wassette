@@ -52,15 +52,30 @@ pub(crate) async fn handle_load_component(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing required argument: 'path'"))?;
 
-    info!(path, "Loading component");
+    debug!(
+        path = %path,
+        operation = "load-component",
+        "Component load operation started"
+    );
 
     match lifecycle_manager.load_component(path).await {
         Ok(outcome) => {
+            info!(
+                path = %path,
+                component_id = %outcome.component_id,
+                operation = "load-component",
+                "Component loaded successfully"
+            );
             handle_tool_list_notification(Some(server_peer), &outcome.component_id, "load").await;
             create_load_component_success_result(&outcome)
         }
         Err(e) => {
-            error!(error = %e, path, "Failed to load component");
+            error!(
+                path = %path,
+                operation = "load-component",
+                error = %e,
+                "Component load operation failed"
+            );
             Err(anyhow::anyhow!(
                 "Failed to load component: {}. Error: {}",
                 path,
@@ -82,15 +97,29 @@ pub(crate) async fn handle_unload_component(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing 'id' in arguments"))?;
 
-    info!(component_id = %id, "Unloading component");
+    debug!(
+        component_id = %id,
+        operation = "unload-component",
+        "Component unload operation started"
+    );
 
     match lifecycle_manager.unload_component(id).await {
         Ok(()) => {
+            info!(
+                component_id = %id,
+                operation = "unload-component",
+                "Component unloaded successfully"
+            );
             handle_tool_list_notification(Some(server_peer), id, "unload").await;
             create_component_success_result("unload", id)
         }
         Err(e) => {
-            error!(error = %e, "Failed to unload component");
+            error!(
+                component_id = %id,
+                operation = "unload-component",
+                error = %e,
+                "Component unload operation failed"
+            );
             Ok(create_component_error_result("unload", id, &e))
         }
     }
@@ -103,27 +132,32 @@ pub async fn handle_component_call(
 ) -> Result<CallToolResult> {
     let args = extract_args_from_request(req)?;
 
-    let method_name = req.name.to_string();
-    info!(function_name = %method_name, "Calling function");
-
     let component_id = lifecycle_manager
-        .get_component_id_for_tool(&method_name)
+        .get_component_id_for_tool(&req.name)
         .await
-        .map_err(|e| {
-            anyhow::anyhow!("Failed to find component for tool '{}': {}", method_name, e)
-        })?;
+        .map_err(|e| anyhow::anyhow!("Failed to find component for tool '{}': {}", req.name, e))?;
+
+    debug!(
+        function_name = %req.name,
+        component_id = %component_id,
+        "Component function invocation started"
+    );
 
     let tool_schema = lifecycle_manager
-        .get_tool_schema_for_component(&component_id, &method_name)
+        .get_tool_schema_for_component(&component_id, &req.name)
         .await;
 
     let result = lifecycle_manager
-        .execute_component_call(&component_id, &method_name, &serde_json::to_string(&args)?)
+        .execute_component_call(&component_id, &req.name, &serde_json::to_string(&args)?)
         .await;
 
     match result {
         Ok(result_str) => {
-            debug!("Component call successful");
+            debug!(
+                function_name = %req.name,
+                component_id = %component_id,
+                "Component function invocation completed successfully"
+            );
 
             let parsed_value = parse_structured_result(&result_str);
             let display_value = unwrap_result_wrapper(&parsed_value);
@@ -147,7 +181,12 @@ pub async fn handle_component_call(
             })
         }
         Err(e) => {
-            error!(error = %e, "Component call failed");
+            error!(
+                function_name = %req.name,
+                component_id = %component_id,
+                error = %e,
+                "Component function invocation failed"
+            );
             Err(anyhow::anyhow!(e.to_string()))
         }
     }
