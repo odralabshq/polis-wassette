@@ -231,7 +231,6 @@ pub fn blocked_result(reason: &str) -> CallToolResult {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
