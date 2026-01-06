@@ -13,12 +13,14 @@ license-file = "LICENSE"
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 component2json = { path = "crates/component2json" }
 etcetera = "0.11"
 futures = "0.3"
 wassette = { path = "crates/wassette" }
 mcp-sdk = "0.0.3"
 mcp-server = { path = "crates/mcp-server" }
+polis-middleware = { path = "crates/polis-middleware" }
 oci-client = "0.15"
 oci-wasm = "0.3"
 policy = { path = "crates/policy" }
@@ -67,6 +69,11 @@ serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+polis-middleware = { workspace = true, optional = true }
+
+[features]
+default = []
+polis = ["dep:polis-middleware"]
 
 [[bin]]
 name = "wassette"
