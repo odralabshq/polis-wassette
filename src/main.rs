@@ -25,7 +25,6 @@ mod manifest;
 mod permission_synthesis;
 mod provisioning_controller;
 mod registry;
-mod server;
 mod tools;
 mod utils;
 
@@ -35,7 +34,7 @@ use commands::{
     RegistryCommands, RevokePermissionCommands, SecretCommands, Shell, ToolCommands, Transport,
 };
 use format::{print_result, OutputFormat};
-use server::McpServer;
+use mcp_server::McpServer;
 use tools::ToolName;
 use utils::{format_build_info, load_component_registry, parse_env_var};
 

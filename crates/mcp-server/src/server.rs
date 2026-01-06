@@ -1,16 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! PolisServer - Wrapper around McpServer with middleware support
+//! MCP Server implementation for handling WebAssembly components.
+//!
+//! This module provides [`McpServer`] which implements the MCP protocol
+//! and can be customized via [`ServerHooks`].
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use mcp_server::{
-    handle_prompts_list, handle_resources_list, handle_tools_call, handle_tools_list,
-    LifecycleManager,
-};
 use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorData, ListPromptsResult, ListResourcesResult,
     ListToolsResult, PaginatedRequestParam, ServerCapabilities, ServerInfo, ToolsCapability,
@@ -18,50 +17,56 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::ServerHandler;
 
-use crate::context::{ToolCallContext, ToolCallResultContext, ToolListContext};
-use crate::middleware::{blocked_result, MiddlewareChain};
+use crate::hooks::{blocked_result, NoOpHooks, ServerHooks, ToolCallContext, ToolResultContext};
+use crate::{handle_prompts_list, handle_resources_list, handle_tools_call, handle_tools_list};
+use wassette::LifecycleManager;
 
-/// MCP Server with middleware support
+/// MCP server for running WebAssembly components.
 ///
-/// This wraps the core Wassette functionality and adds middleware hooks
-/// for the request/response lifecycle.
+/// # Example
+///
+/// ```ignore
+/// use mcp_server::{McpServer, LifecycleManager};
+///
+/// // Simple usage
+/// let server = McpServer::new(lifecycle_manager, false);
+///
+/// // With hooks
+/// let server = McpServer::builder(lifecycle_manager)
+///     .with_hooks(MyHooks)
+///     .build();
+/// ```
 #[derive(Clone)]
-pub struct PolisServer {
+pub struct McpServer {
     lifecycle_manager: LifecycleManager,
     peer: Arc<Mutex<Option<rmcp::Peer<rmcp::RoleServer>>>>,
     disable_builtin_tools: bool,
-    middleware: MiddlewareChain,
-    server_instructions: Option<String>,
+    hooks: Arc<dyn ServerHooks>,
+    instructions: Option<String>,
 }
 
-impl PolisServer {
-    /// Creates a new Polis server with middleware support
+impl McpServer {
+    /// Creates a new MCP server instance.
     ///
     /// # Arguments
     /// * `lifecycle_manager` - The lifecycle manager for handling component operations
     /// * `disable_builtin_tools` - Whether to disable built-in tools
-    /// * `middleware` - The middleware chain to execute on requests
-    pub fn new(
-        lifecycle_manager: LifecycleManager,
-        disable_builtin_tools: bool,
-        middleware: MiddlewareChain,
-    ) -> Self {
+    pub fn new(lifecycle_manager: LifecycleManager, disable_builtin_tools: bool) -> Self {
         Self {
             lifecycle_manager,
             peer: Arc::new(Mutex::new(None)),
             disable_builtin_tools,
-            middleware,
-            server_instructions: None,
+            hooks: Arc::new(NoOpHooks),
+            instructions: None,
         }
     }
 
-    /// Set custom server instructions (shown to MCP clients)
-    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
-        self.server_instructions = Some(instructions.into());
-        self
+    /// Create a builder for more advanced configuration.
+    pub fn builder(lifecycle_manager: LifecycleManager) -> McpServerBuilder {
+        McpServerBuilder::new(lifecycle_manager)
     }
 
-    /// Store the peer for background notifications
+    /// Store the peer for background notifications (called on first request).
     fn store_peer_if_empty(&self, peer: rmcp::Peer<rmcp::RoleServer>) {
         let mut peer_guard = self.peer.lock().unwrap();
         if peer_guard.is_none() {
@@ -69,19 +74,14 @@ impl PolisServer {
         }
     }
 
-    /// Get a clone of the stored peer if available
+    /// Get a clone of the stored peer if available.
     pub fn get_peer(&self) -> Option<rmcp::Peer<rmcp::RoleServer>> {
         self.peer.lock().unwrap().clone()
     }
 
-    /// Get the lifecycle manager
+    /// Get the lifecycle manager.
     pub fn lifecycle_manager(&self) -> &LifecycleManager {
         &self.lifecycle_manager
-    }
-
-    /// Get the middleware chain
-    pub fn middleware(&self) -> &MiddlewareChain {
-        &self.middleware
     }
 
     fn default_instructions() -> String {
@@ -99,7 +99,7 @@ Key points:
 }
 
 #[allow(refining_impl_trait_reachable)]
-impl ServerHandler for PolisServer {
+impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             capabilities: ServerCapabilities {
@@ -109,7 +109,7 @@ impl ServerHandler for PolisServer {
                 ..Default::default()
             },
             instructions: Some(
-                self.server_instructions
+                self.instructions
                     .clone()
                     .unwrap_or_else(Self::default_instructions),
             ),
@@ -126,36 +126,33 @@ impl ServerHandler for PolisServer {
         self.store_peer_if_empty(peer_clone.clone());
 
         let disable_builtin_tools = self.disable_builtin_tools;
-        let middleware = self.middleware.clone();
+        let hooks = self.hooks.clone();
 
         Box::pin(async move {
-            // Create middleware context
-            let mut tool_ctx = ToolCallContext::from_params(&params);
             let start_time = std::time::Instant::now();
 
+            // Create hook context
+            let mut tool_ctx = ToolCallContext::from_params(&params);
+
             // Run before hooks
-            if let Err(e) = middleware.run_before_tool_call(&mut tool_ctx).await {
-                tracing::error!(error = %e, "Middleware before_tool_call failed");
-                return Err(ErrorData::internal_error(e.message, None));
+            if let Err(e) = hooks.before_tool_call(&mut tool_ctx) {
+                tracing::error!(error = ?e, "Hook before_tool_call failed");
+                return Err(e);
             }
 
-            // Check if middleware blocked the call
-            if tool_ctx.skip_execution {
+            // Check if blocked
+            if tool_ctx.blocked {
                 let reason = tool_ctx
-                    .skip_reason
-                    .unwrap_or_else(|| "Blocked by middleware".to_string());
-                tracing::info!(
-                    tool = %tool_ctx.tool_name,
-                    reason = %reason,
-                    "Tool call blocked"
-                );
+                    .block_reason
+                    .unwrap_or_else(|| "Blocked by hook".to_string());
+                tracing::info!(tool = %tool_ctx.tool_name, reason = %reason, "Tool call blocked");
                 return Ok(blocked_result(&reason));
             }
 
             // Rebuild params with potentially modified arguments
             let modified_params = tool_ctx.to_params();
 
-            // Execute the actual tool call
+            // Execute the tool
             let result = handle_tools_call(
                 modified_params,
                 &self.lifecycle_manager,
@@ -173,16 +170,16 @@ impl ServerHandler for PolisServer {
                     })?;
 
                     // Run after hooks
-                    let mut result_ctx = ToolCallResultContext {
+                    let mut result_ctx = ToolResultContext {
                         tool_name: tool_ctx.tool_name,
                         result: call_result,
                         metadata: tool_ctx.metadata,
                         duration,
                     };
 
-                    if let Err(e) = middleware.run_after_tool_call(&mut result_ctx).await {
-                        tracing::error!(error = %e, "Middleware after_tool_call failed");
-                        // Continue with original result on middleware error
+                    if let Err(e) = hooks.after_tool_call(&mut result_ctx) {
+                        tracing::error!(error = ?e, "Hook after_tool_call failed");
+                        // Continue with result on hook error
                     }
 
                     Ok(result_ctx.result)
@@ -200,7 +197,7 @@ impl ServerHandler for PolisServer {
         self.store_peer_if_empty(ctx.peer.clone());
 
         let disable_builtin_tools = self.disable_builtin_tools;
-        let middleware = self.middleware.clone();
+        let hooks = self.hooks.clone();
 
         Box::pin(async move {
             let result = handle_tools_list(&self.lifecycle_manager, disable_builtin_tools).await;
@@ -212,15 +209,8 @@ impl ServerHandler for PolisServer {
                             ErrorData::parse_error(format!("Failed to parse result: {e}"), None)
                         })?;
 
-                    // Run middleware hooks
-                    let mut list_ctx = ToolListContext::new(list_result.tools);
-
-                    if let Err(e) = middleware.run_on_list_tools(&mut list_ctx).await {
-                        tracing::error!(error = %e, "Middleware on_list_tools failed");
-                        // Continue with original list on middleware error
-                    } else {
-                        list_result.tools = list_ctx.tools;
-                    }
+                    // Run hook
+                    hooks.on_list_tools(&mut list_result.tools);
 
                     Ok(list_result)
                 }
@@ -263,5 +253,76 @@ impl ServerHandler for PolisServer {
                 Err(err) => Err(ErrorData::parse_error(err.to_string(), None)),
             }
         })
+    }
+}
+
+/// Builder for [`McpServer`] with advanced configuration options.
+///
+/// # Example
+///
+/// ```ignore
+/// use mcp_server::{McpServer, MiddlewareStack};
+///
+/// let hooks = MiddlewareStack::new()
+///     .push(LoggingMiddleware)
+///     .push(AuthMiddleware::new(key));
+///
+/// let server = McpServer::builder(lifecycle_manager)
+///     .with_builtin_tools_disabled(true)
+///     .with_hooks(hooks)
+///     .with_instructions("Custom instructions")
+///     .build();
+/// ```
+pub struct McpServerBuilder {
+    lifecycle_manager: LifecycleManager,
+    disable_builtin_tools: bool,
+    hooks: Option<Arc<dyn ServerHooks>>,
+    instructions: Option<String>,
+}
+
+impl McpServerBuilder {
+    /// Create a new builder.
+    pub fn new(lifecycle_manager: LifecycleManager) -> Self {
+        Self {
+            lifecycle_manager,
+            disable_builtin_tools: false,
+            hooks: None,
+            instructions: None,
+        }
+    }
+
+    /// Disable built-in tools (load-component, unload-component, etc.).
+    pub fn with_builtin_tools_disabled(mut self, disabled: bool) -> Self {
+        self.disable_builtin_tools = disabled;
+        self
+    }
+
+    /// Set custom hooks for intercepting requests.
+    pub fn with_hooks<H: ServerHooks + 'static>(mut self, hooks: H) -> Self {
+        self.hooks = Some(Arc::new(hooks));
+        self
+    }
+
+    /// Set custom hooks (Arc version).
+    pub fn with_hooks_arc(mut self, hooks: Arc<dyn ServerHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    /// Set custom server instructions shown to MCP clients.
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Build the server.
+    pub fn build(self) -> McpServer {
+        McpServer {
+            lifecycle_manager: self.lifecycle_manager,
+            peer: Arc::new(Mutex::new(None)),
+            disable_builtin_tools: self.disable_builtin_tools,
+            hooks: self.hooks.unwrap_or_else(|| Arc::new(NoOpHooks)),
+            instructions: self.instructions,
+        }
     }
 }
