@@ -93,7 +93,7 @@ Key points:
 - You can list loaded tools with 'list-components' tool.
 - Each tool only accesses resources explicitly granted by a policy file (filesystem paths, network domains, etc.)
 - You MUST never modify the policy file directly, use tools to grant permissions instead.
-- Tools needs permission for that resource
+- Tools need permission for that resource
 - If access is denied, suggest alternatives within allowed permissions or propose to grant permission"#.to_string()
     }
 }
