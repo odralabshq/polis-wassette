@@ -24,6 +24,7 @@
 //!
 //! ```ignore
 //! use mcp_server::{McpServer, ServerHooks, ToolCallContext, MiddlewareStack};
+//! use rmcp::model::ErrorData;
 //!
 //! struct LoggingHooks;
 //!
