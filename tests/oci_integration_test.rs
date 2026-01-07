@@ -48,6 +48,38 @@ async fn is_registry_operational(registry_url: &str) -> bool {
     }
 }
 
+/// Return true if the specific QR generator manifest is reachable; otherwise log and skip.
+async fn is_qr_generator_manifest_available(reference: &str) -> bool {
+    if !is_registry_operational("https://registry.mcpsearchtool.com").await {
+        eprintln!("⚠️  Skipping test: registry.mcpsearchtool.com not reachable for {reference}");
+        return false;
+    }
+
+    let parsed: oci_client::Reference = match reference
+        .trim_start_matches("oci://")
+        .parse()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("⚠️  Skipping test: could not parse reference {reference}: {e}");
+            return false;
+        }
+    };
+
+    let client = oci_client::Client::default();
+    match client
+        .pull_manifest(&parsed, &oci_client::secrets::RegistryAuth::Anonymous)
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            let msg = e.to_string();
+            eprintln!("⚠️  Skipping test: manifest unavailable for {reference}: {msg}");
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod multi_layer_oci_tests {
     use super::*;
@@ -243,6 +275,14 @@ mod multi_layer_oci_tests {
     /// Test that we actually download the policy layer correctly
     #[tokio::test]
     async fn test_policy_download_from_multi_layer_oci() -> Result<()> {
+        if !is_qr_generator_manifest_available(
+            "registry.mcpsearchtool.com/test/qr-generator:v1755367253",
+        )
+        .await
+        {
+            return Ok(());
+        }
+
         // Test that we actually download the policy layer
         let reference: oci_client::Reference =
             "registry.mcpsearchtool.com/test/qr-generator:v1755367253".parse()?;
@@ -283,6 +323,10 @@ mod qr_generator_component_tests {
 
     #[tokio::test]
     async fn test_qr_generator_loads_from_oci() -> Result<()> {
+        if !is_qr_generator_manifest_available(QR_GENERATOR_OCI_URI).await {
+            return Ok(());
+        }
+
         let temp_dir = tempfile::tempdir()?;
         let manager = LifecycleManager::new(temp_dir.path()).await?;
 
@@ -301,6 +345,10 @@ mod qr_generator_component_tests {
 
     #[tokio::test]
     async fn test_qr_generator_has_expected_tools() -> Result<()> {
+        if !is_qr_generator_manifest_available(QR_GENERATOR_OCI_URI).await {
+            return Ok(());
+        }
+
         let temp_dir = tempfile::tempdir()?;
         let manager = LifecycleManager::new(temp_dir.path()).await?;
 
@@ -323,6 +371,10 @@ mod qr_generator_component_tests {
 
     #[tokio::test]
     async fn test_qr_generator_policy_is_saved() -> Result<()> {
+        if !is_qr_generator_manifest_available(QR_GENERATOR_OCI_URI).await {
+            return Ok(());
+        }
+
         let temp_dir = tempfile::tempdir()?;
         let manager = LifecycleManager::new(temp_dir.path()).await?;
 
@@ -349,6 +401,10 @@ mod qr_generator_component_tests {
 
     #[tokio::test]
     async fn test_qr_generator_policy_is_attached() -> Result<()> {
+        if !is_qr_generator_manifest_available(QR_GENERATOR_OCI_URI).await {
+            return Ok(());
+        }
+
         let temp_dir = tempfile::tempdir()?;
         let manager = LifecycleManager::new(temp_dir.path()).await?;
 
@@ -369,6 +425,10 @@ mod qr_generator_component_tests {
 
     #[tokio::test]
     async fn test_qr_generator_handles_invalid_input() -> Result<()> {
+        if !is_qr_generator_manifest_available(QR_GENERATOR_OCI_URI).await {
+            return Ok(());
+        }
+
         let temp_dir = tempfile::tempdir()?;
         let manager = LifecycleManager::new(temp_dir.path()).await?;
 
@@ -535,6 +595,14 @@ mod real_registry_digest_tests {
     /// This test verifies digest checking against the actual registry
     #[tokio::test]
     async fn test_real_registry_digest_verification() -> Result<()> {
+        if !is_qr_generator_manifest_available(
+            "registry.mcpsearchtool.com/test/qr-generator:v1755367253",
+        )
+        .await
+        {
+            return Ok(());
+        }
+
         // Create real OCI client
         let client = oci_client::Client::default();
         let reference: oci_client::Reference =
