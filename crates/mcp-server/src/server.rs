@@ -181,7 +181,7 @@ impl ServerHandler for McpServer {
 
                     if let Err(e) = hooks.after_tool_call(&mut result_ctx) {
                         tracing::error!(error = ?e, "Hook after_tool_call failed");
-                        // Continue with result on hook error
+                        return Err(e);
                     }
 
                     Ok(result_ctx.result)
