@@ -49,6 +49,8 @@
 //!     .with_hooks(hooks)
 //!     .build();
 //! ```
+//!
+//! Note: `ErrorData` is re-exported from `rmcp::model::ErrorData`.
 
 pub use wassette::LifecycleManager;
 

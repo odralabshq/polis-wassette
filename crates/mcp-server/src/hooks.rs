@@ -120,6 +120,7 @@ pub struct ToolResultContext {
 ///
 /// ```ignore
 /// use mcp_server::{ServerHooks, ToolCallContext};
+/// use rmcp::model::ErrorData;
 ///
 /// struct LoggingHooks;
 ///
