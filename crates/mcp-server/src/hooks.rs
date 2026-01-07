@@ -271,12 +271,13 @@ impl ServerHooks for MiddlewareStack {
 /// Create a blocked tool result.
 pub fn blocked_result(reason: &str) -> CallToolResult {
     CallToolResult {
-        content: Some(vec![rmcp::model::Content::text(format!(
+        content: vec![rmcp::model::Content::text(format!(
             "Tool call blocked: {}",
             reason
-        ))]),
+        ))],
         structured_content: None,
         is_error: Some(true),
+        meta: None,
     }
 }
 
@@ -289,7 +290,7 @@ mod tests {
     // Helper to create test params
     fn make_test_params(name: &str) -> CallToolRequestParam {
         CallToolRequestParam {
-            name: name.into(),
+            name: name.to_string().into(),
             arguments: None,
         }
     }
@@ -300,8 +301,21 @@ mod tests {
         args: serde_json::Map<String, Value>,
     ) -> CallToolRequestParam {
         CallToolRequestParam {
-            name: name.into(),
+            name: name.to_string().into(),
             arguments: Some(args),
+        }
+    }
+
+    fn make_tool(name: &str) -> Tool {
+        Tool {
+            name: name.to_string().into(),
+            title: None,
+            description: Some("desc".into()),
+            input_schema: Arc::new(serde_json::Map::new()),
+            output_schema: None,
+            annotations: None,
+            icons: None,
+            meta: None,
         }
     }
 
@@ -310,9 +324,10 @@ mod tests {
         ToolResultContext {
             tool_name: name.to_string(),
             result: CallToolResult {
-                content: Some(vec![Content::text("test result")]),
+                content: vec![Content::text("test result")],
                 structured_content: None,
                 is_error: None,
+                meta: None,
             },
             metadata: HashMap::new(),
             duration: std::time::Duration::from_millis(100),
@@ -335,12 +350,7 @@ mod tests {
         assert!(hooks.after_tool_call(&mut result_ctx).is_ok());
 
         // on_list_tools should not modify the list
-        let mut tools = vec![Tool {
-            name: "tool1".into(),
-            description: Some("desc".into()),
-            input_schema: serde_json::json!({}),
-            annotations: None,
-        }];
+        let mut tools = vec![make_tool("tool1")];
         let original_len = tools.len();
         hooks.on_list_tools(&mut tools);
         assert_eq!(tools.len(), original_len);
@@ -408,7 +418,7 @@ mod tests {
         assert!(!ctx.arguments_were_modified());
 
         // into_params should return original params without cloning
-        let result = ctx.into_params(params);
+        let result = ctx.into_params(params.clone());
         assert_eq!(result.name.as_ref(), "test_tool");
         assert!(result.arguments.is_some());
     }
@@ -429,7 +439,7 @@ mod tests {
 
         assert!(ctx.arguments_were_modified());
 
-        let result = ctx.into_params(params);
+        let result = ctx.into_params(params.clone());
         assert_eq!(result.name.as_ref(), "test_tool");
         let args = result.arguments.unwrap();
         assert!(args.contains_key("arg2"));
@@ -620,7 +630,7 @@ mod tests {
             fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 Err(ErrorData::internal_error(
                     "Hook failed".to_string(),
-                    None::<()>,
+                    None::<serde_json::Value>,
                 ))
             }
 
@@ -679,18 +689,12 @@ mod tests {
         let result = blocked_result("Access denied");
 
         assert_eq!(result.is_error, Some(true));
-        assert!(result.content.is_some());
+        assert!(!result.content.is_empty());
 
-        let content = result.content.unwrap();
-        assert_eq!(content.len(), 1);
-
-        // Check the text content contains the reason
-        if let Content::Text(text_content) = &content[0] {
-            assert!(text_content.text.contains("Access denied"));
-            assert!(text_content.text.contains("blocked"));
-        } else {
-            panic!("Expected text content");
-        }
+        let content_json = serde_json::to_value(&result.content).unwrap();
+        let text = content_json[0]["text"].as_str().unwrap();
+        assert!(text.contains("Access denied"));
+        assert!(text.contains("blocked"));
     }
 
     #[test]
@@ -710,24 +714,9 @@ mod tests {
         let stack = MiddlewareStack::new().push(ToolFilter);
 
         let mut tools = vec![
-            Tool {
-                name: "public_tool".into(),
-                description: Some("Public".into()),
-                input_schema: serde_json::json!({}),
-                annotations: None,
-            },
-            Tool {
-                name: "internal_debug".into(),
-                description: Some("Internal".into()),
-                input_schema: serde_json::json!({}),
-                annotations: None,
-            },
-            Tool {
-                name: "another_public".into(),
-                description: Some("Another".into()),
-                input_schema: serde_json::json!({}),
-                annotations: None,
-            },
+            make_tool("public_tool"),
+            make_tool("internal_debug"),
+            make_tool("another_public"),
         ];
 
         stack.on_list_tools(&mut tools);

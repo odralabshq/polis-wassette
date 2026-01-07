@@ -5,12 +5,50 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use http_body_util::Full;
 use test_log::test;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+use tokio::task::JoinHandle;
+use tokio::net::TcpListener;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::TokioIo;
 
 mod common;
 use common::build_fetch_component;
+
+async fn start_mock_http_server() -> Result<(std::net::SocketAddr, JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let service = service_fn(|_req: Request<hyper::body::Incoming>| async move {
+                    let response = Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Full::new(Bytes::from_static(
+                            br#"{"message":"hello","ok":true}"#
+                        )))
+                        .unwrap();
+                    Ok::<_, hyper::Error>(response)
+                });
+
+                if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                    eprintln!("Error serving connection: {err:?}");
+                }
+            });
+        }
+    });
+
+    Ok((addr, handle))
+}
 
 /// End-to-end integration test for MCP structured output feature.
 /// This test verifies that:
@@ -52,6 +90,7 @@ async fn test_structured_output_integration() -> Result<()> {
 
     stdin.write_all(initialize_request.as_bytes()).await?;
     stdin.flush().await?;
+    println!("✓ Sent initialize request");
 
     // Read initialize response
     let mut response_line = String::new();
@@ -69,6 +108,7 @@ async fn test_structured_output_integration() -> Result<()> {
     assert_eq!(response["jsonrpc"], "2.0");
     assert_eq!(response["id"], 1);
     assert!(response["result"].is_object());
+    println!("✓ Received initialize response");
 
     // Send initialized notification (required by MCP protocol)
     let initialized_notification = r#"{"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
@@ -86,6 +126,7 @@ async fn test_structured_output_integration() -> Result<()> {
 
     stdin.write_all(load_component_request.as_bytes()).await?;
     stdin.flush().await?;
+    println!("✓ Sent load-component request");
 
     // Read potential tools/list_changed notification first
     let mut notification_line = String::new();
@@ -134,6 +175,7 @@ async fn test_structured_output_integration() -> Result<()> {
 
     stdin.write_all(list_tools_request.as_bytes()).await?;
     stdin.flush().await?;
+    println!("✓ Sent tools/list request");
 
     // Read tools list response
     let mut tools_response_line = String::new();
@@ -152,6 +194,7 @@ async fn test_structured_output_integration() -> Result<()> {
     assert_eq!(tools_response["id"], 3);
     assert!(tools_response["result"].is_object());
     assert!(tools_response["result"]["tools"].is_array());
+    println!("✓ Received tools/list response");
 
     let tools = tools_response["result"]["tools"].as_array().unwrap();
 
@@ -221,13 +264,42 @@ async fn test_structured_output_integration() -> Result<()> {
         );
     }
 
-    // Step 4: Test an actual tool call to verify structured content handling
-    // We'll use a simple URL that should work without network permissions for basic testing
-    let fetch_call_request = r#"{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "fetch", "arguments": {"url": "https://httpbin.org/get"}}, "id": 4}
+    // Step 3.5: Grant network permission for localhost so the fetch call can succeed quickly
+    let grant_permission_request = r#"{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "grant-network-permission", "arguments": {"component_id": "fetch_rs", "details": {"host": "127.0.0.1"}}}, "id": 4}
 "#;
+
+    stdin
+        .write_all(grant_permission_request.as_bytes())
+        .await?;
+    stdin.flush().await?;
+    println!("✓ Sent grant-network-permission request");
+
+    let mut grant_response_line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        stdout.read_line(&mut grant_response_line),
+    )
+    .await
+    .context("Timeout waiting for grant-network-permission response")?
+    .context("Failed to read grant-network-permission response")?;
+
+    let grant_response: serde_json::Value = serde_json::from_str(&grant_response_line)
+        .context("Failed to parse grant-network-permission response")?;
+    assert!(grant_response["error"].is_null());
+    println!("✓ Received grant-network-permission response");
+
+    // Step 4: Test an actual tool call to verify structured content handling
+    // Use a local mock server to avoid external network dependency
+    let (mock_addr, mock_handle) = start_mock_http_server().await?;
+    let fetch_call_request = format!(
+        r#"{{"jsonrpc": "2.0", "method": "tools/call", "params": {{"name": "fetch", "arguments": {{"url": "http://{}"}}}}, "id": 5}}
+"#,
+        mock_addr
+    );
 
     stdin.write_all(fetch_call_request.as_bytes()).await?;
     stdin.flush().await?;
+    println!("✓ Sent fetch request to mock server at {}", mock_addr);
 
     // Read fetch response
     let mut fetch_response_line = String::new();
@@ -243,7 +315,8 @@ async fn test_structured_output_integration() -> Result<()> {
         serde_json::from_str(&fetch_response_line).context("Failed to parse fetch response")?;
 
     assert_eq!(fetch_response["jsonrpc"], "2.0");
-    assert_eq!(fetch_response["id"], 4);
+    assert_eq!(fetch_response["id"], 5);
+    println!("✓ Received fetch response");
 
     // The fetch call might fail due to network restrictions, but we can still verify the response structure
     if fetch_response["result"].is_object() {
@@ -283,6 +356,7 @@ async fn test_structured_output_integration() -> Result<()> {
 
     // Clean up
     let _ = child.kill().await;
+    mock_handle.abort();
 
     println!("✓ Structured output integration test completed successfully!");
     println!("  - Component loaded with structured output schema");

@@ -151,8 +151,8 @@ impl ServerHandler for McpServer {
             }
 
             // Get params - only clones arguments if they were modified by hooks
-            let metadata = tool_ctx.metadata;
-            let final_params = tool_ctx.into_params(params);
+            let metadata = tool_ctx.metadata.clone();
+            let final_params = tool_ctx.into_params(params.clone());
 
             // Execute the tool
             let result = handle_tools_call(
@@ -332,6 +332,7 @@ impl McpServerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MiddlewareStack;
     use rmcp::model::Tool;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -786,7 +787,7 @@ mod tests {
         fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
             Err(ErrorData::internal_error(
                 self.error_message.clone(),
-                None::<()>,
+                None::<serde_json::Value>,
             ))
         }
 
