@@ -1032,6 +1032,14 @@ pub async fn handle_reset_permission(
 mod tests {
     use super::*;
 
+    fn first_text_content(result: &CallToolResult) -> Result<String> {
+        let content_json = serde_json::to_value(&result.content)?;
+        let text = content_json[0]["text"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
+        Ok(text.to_string())
+    }
+
     #[test]
     fn test_get_builtin_tools() {
         let tools = get_builtin_tools();
@@ -1433,17 +1441,9 @@ mod tests {
         let result = handle_search_component(&req, &lifecycle_manager).await?;
 
         // Parse the result
-        let content = result
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No content in result"))?;
+        let text = first_text_content(&result)?;
 
-        let content_json = serde_json::to_value(content)?;
-        let text = content_json[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
-
-        let response: Value = serde_json::from_str(text)?;
+        let response: Value = serde_json::from_str(&text)?;
         assert_eq!(response["status"], "Component list found");
 
         let components = response["components"]
@@ -1472,17 +1472,9 @@ mod tests {
         let result = handle_search_component(&req, &lifecycle_manager).await?;
 
         // Parse the result
-        let content = result
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No content in result"))?;
+        let text = first_text_content(&result)?;
 
-        let content_json = serde_json::to_value(content)?;
-        let text = content_json[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
-
-        let response: Value = serde_json::from_str(text)?;
+        let response: Value = serde_json::from_str(&text)?;
         assert_eq!(response["status"], "Component list found");
 
         let components = response["components"]
@@ -1528,17 +1520,9 @@ mod tests {
 
         let result = handle_search_component(&req, &lifecycle_manager).await?;
 
-        let content = result
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No content in result"))?;
+        let text = first_text_content(&result)?;
 
-        let content_json = serde_json::to_value(content)?;
-        let text = content_json[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
-
-        let response: Value = serde_json::from_str(text)?;
+        let response: Value = serde_json::from_str(&text)?;
         let components = response["components"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Components is not an array"))?;
@@ -1564,17 +1548,9 @@ mod tests {
 
         let result = handle_search_component(&req, &lifecycle_manager).await?;
 
-        let content = result
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No content in result"))?;
+        let text = first_text_content(&result)?;
 
-        let content_json = serde_json::to_value(content)?;
-        let text = content_json[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
-
-        let response: Value = serde_json::from_str(text)?;
+        let response: Value = serde_json::from_str(&text)?;
         let components = response["components"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Components is not an array"))?;
@@ -1600,17 +1576,9 @@ mod tests {
 
         let result = handle_search_component(&req, &lifecycle_manager).await?;
 
-        let content = result
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No content in result"))?;
+        let text = first_text_content(&result)?;
 
-        let content_json = serde_json::to_value(content)?;
-        let text = content_json[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
-
-        let response: Value = serde_json::from_str(text)?;
+        let response: Value = serde_json::from_str(&text)?;
         let components = response["components"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Components is not an array"))?;
@@ -1639,17 +1607,9 @@ mod tests {
 
         let result = handle_search_component(&req, &lifecycle_manager).await?;
 
-        let content = result
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No content in result"))?;
+        let text = first_text_content(&result)?;
 
-        let content_json = serde_json::to_value(content)?;
-        let text = content_json[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No text in content"))?;
-
-        let response: Value = serde_json::from_str(text)?;
+        let response: Value = serde_json::from_str(&text)?;
         let components = response["components"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Components is not an array"))?;
