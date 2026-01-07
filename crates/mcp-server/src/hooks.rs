@@ -13,11 +13,16 @@ use std::sync::Arc;
 
 /// Context passed to hooks before a tool call.
 #[derive(Debug)]
-pub struct ToolCallContext {
+pub struct ToolCallContext<'a> {
     /// The tool name being called
     pub tool_name: String,
     /// The arguments passed to the tool (mutable for transformation)
-    pub arguments: Option<serde_json::Map<String, Value>>,
+    /// Lazily cloned on first mutable access via `arguments_mut()`
+    arguments: Option<serde_json::Map<String, Value>>,
+    /// Reference to original arguments (used when not modified)
+    original_arguments: &'a Option<serde_json::Map<String, Value>>,
+    /// Whether arguments have been modified
+    arguments_modified: bool,
     /// Request metadata for sharing data between hooks
     pub metadata: HashMap<String, Value>,
     /// Set to true to block execution
@@ -26,16 +31,41 @@ pub struct ToolCallContext {
     pub block_reason: Option<String>,
 }
 
-impl ToolCallContext {
+impl<'a> ToolCallContext<'a> {
     /// Create context from request params
-    pub fn from_params(params: &CallToolRequestParam) -> Self {
+    pub fn from_params(params: &'a CallToolRequestParam) -> Self {
         Self {
             tool_name: params.name.to_string(),
-            arguments: params.arguments.clone(),
+            arguments: None,
+            original_arguments: &params.arguments,
+            arguments_modified: false,
             metadata: HashMap::new(),
             blocked: false,
             block_reason: None,
         }
+    }
+
+    /// Get immutable reference to arguments
+    pub fn arguments(&self) -> Option<&serde_json::Map<String, Value>> {
+        if self.arguments_modified {
+            self.arguments.as_ref()
+        } else {
+            self.original_arguments.as_ref()
+        }
+    }
+
+    /// Get mutable reference to arguments, cloning on first access
+    pub fn arguments_mut(&mut self) -> &mut Option<serde_json::Map<String, Value>> {
+        if !self.arguments_modified {
+            self.arguments = self.original_arguments.clone();
+            self.arguments_modified = true;
+        }
+        &mut self.arguments
+    }
+
+    /// Check if arguments were modified by hooks
+    pub fn arguments_were_modified(&self) -> bool {
+        self.arguments_modified
     }
 
     /// Block this tool call with a reason
@@ -44,11 +74,26 @@ impl ToolCallContext {
         self.block_reason = Some(reason.into());
     }
 
-    /// Rebuild params with potentially modified arguments
-    pub fn to_params(&self) -> CallToolRequestParam {
-        CallToolRequestParam {
-            name: self.tool_name.clone().into(),
-            arguments: self.arguments.clone(),
+    /// Rebuild params with potentially modified arguments.
+    /// Only clones if arguments were actually modified.
+    pub fn into_params(self, original_params: CallToolRequestParam) -> CallToolRequestParam {
+        if self.arguments_modified {
+            CallToolRequestParam {
+                name: original_params.name,
+                arguments: self.arguments,
+            }
+        } else {
+            original_params
+        }
+    }
+
+    /// Get the modified arguments if any, consuming self.
+    /// Returns None if arguments weren't modified.
+    pub fn take_modified_arguments(self) -> Option<Option<serde_json::Map<String, Value>>> {
+        if self.arguments_modified {
+            Some(self.arguments)
+        } else {
+            None
         }
     }
 }
@@ -79,7 +124,7 @@ pub struct ToolResultContext {
 /// struct LoggingHooks;
 ///
 /// impl ServerHooks for LoggingHooks {
-///     fn before_tool_call(&self, ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+///     fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
 ///         tracing::info!("Calling tool: {}", ctx.tool_name);
 ///         Ok(())
 ///     }
@@ -89,10 +134,13 @@ pub trait ServerHooks: Send + Sync {
     /// Called before a tool is executed.
     ///
     /// Use this to:
-    /// - Validate or transform arguments
+    /// - Validate or transform arguments (use `ctx.arguments_mut()` to modify)
     /// - Block calls by calling `ctx.block("reason")`
     /// - Add metadata for later hooks
-    fn before_tool_call(&self, _ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+    ///
+    /// Note: Arguments are lazily cloned only when `arguments_mut()` is called,
+    /// so read-only hooks should use `ctx.arguments()` to avoid unnecessary cloning.
+    fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
         Ok(())
     }
 
@@ -181,7 +229,7 @@ impl MiddlewareStack {
 }
 
 impl ServerHooks for MiddlewareStack {
-    fn before_tool_call(&self, ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+    fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
         for middleware in &self.middlewares {
             tracing::trace!(hook = middleware.name(), tool = %ctx.tool_name, "before_tool_call");
             middleware.before_tool_call(ctx)?;
@@ -237,14 +285,22 @@ mod tests {
     use rmcp::model::Content;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Helper to create a basic ToolCallContext
-    fn make_tool_context(name: &str) -> ToolCallContext {
-        ToolCallContext {
-            tool_name: name.to_string(),
+    // Helper to create test params
+    fn make_test_params(name: &str) -> CallToolRequestParam {
+        CallToolRequestParam {
+            name: name.into(),
             arguments: None,
-            metadata: HashMap::new(),
-            blocked: false,
-            block_reason: None,
+        }
+    }
+
+    // Helper to create test params with arguments
+    fn make_test_params_with_args(
+        name: &str,
+        args: serde_json::Map<String, Value>,
+    ) -> CallToolRequestParam {
+        CallToolRequestParam {
+            name: name.into(),
+            arguments: Some(args),
         }
     }
 
@@ -267,7 +323,8 @@ mod tests {
         let hooks = NoOpHooks;
 
         // before_tool_call should succeed without modification
-        let mut ctx = make_tool_context("test_tool");
+        let params = make_test_params("test_tool");
+        let mut ctx = ToolCallContext::from_params(&params);
         assert!(hooks.before_tool_call(&mut ctx).is_ok());
         assert!(!ctx.blocked);
         assert!(ctx.block_reason.is_none());
@@ -290,7 +347,8 @@ mod tests {
 
     #[test]
     fn test_tool_call_context_block() {
-        let mut ctx = make_tool_context("test_tool");
+        let params = make_test_params("test_tool");
+        let mut ctx = ToolCallContext::from_params(&params);
         assert!(!ctx.blocked);
         assert!(ctx.block_reason.is_none());
 
@@ -312,21 +370,68 @@ mod tests {
 
         let ctx = ToolCallContext::from_params(&params);
         assert_eq!(ctx.tool_name, "my_tool");
-        assert!(ctx.arguments.is_some());
+        assert!(ctx.arguments().is_some());
         assert!(!ctx.blocked);
+        assert!(!ctx.arguments_were_modified());
     }
 
     #[test]
-    fn test_tool_call_context_to_params() {
-        let mut ctx = make_tool_context("test_tool");
-        ctx.arguments = Some(serde_json::Map::from_iter([(
-            "arg1".to_string(),
-            Value::Number(42.into()),
-        )]));
+    fn test_tool_call_context_lazy_clone() {
+        let params = make_test_params_with_args(
+            "test_tool",
+            serde_json::Map::from_iter([("arg1".to_string(), Value::Number(42.into()))]),
+        );
 
-        let params = ctx.to_params();
-        assert_eq!(params.name.as_ref(), "test_tool");
-        assert!(params.arguments.is_some());
+        let mut ctx = ToolCallContext::from_params(&params);
+
+        // Initially not modified
+        assert!(!ctx.arguments_were_modified());
+
+        // Reading doesn't trigger clone
+        let _ = ctx.arguments();
+        assert!(!ctx.arguments_were_modified());
+
+        // Mutable access triggers clone
+        let _ = ctx.arguments_mut();
+        assert!(ctx.arguments_were_modified());
+    }
+
+    #[test]
+    fn test_tool_call_context_into_params_no_modification() {
+        let params = make_test_params_with_args(
+            "test_tool",
+            serde_json::Map::from_iter([("arg1".to_string(), Value::Number(42.into()))]),
+        );
+
+        let ctx = ToolCallContext::from_params(&params);
+        assert!(!ctx.arguments_were_modified());
+
+        // into_params should return original params without cloning
+        let result = ctx.into_params(params);
+        assert_eq!(result.name.as_ref(), "test_tool");
+        assert!(result.arguments.is_some());
+    }
+
+    #[test]
+    fn test_tool_call_context_into_params_with_modification() {
+        let params = make_test_params_with_args(
+            "test_tool",
+            serde_json::Map::from_iter([("arg1".to_string(), Value::Number(42.into()))]),
+        );
+
+        let mut ctx = ToolCallContext::from_params(&params);
+
+        // Modify arguments
+        if let Some(args) = ctx.arguments_mut() {
+            args.insert("arg2".to_string(), Value::String("new".to_string()));
+        }
+
+        assert!(ctx.arguments_were_modified());
+
+        let result = ctx.into_params(params);
+        assert_eq!(result.name.as_ref(), "test_tool");
+        let args = result.arguments.unwrap();
+        assert!(args.contains_key("arg2"));
     }
 
     #[test]
@@ -342,7 +447,7 @@ mod tests {
         }
 
         impl ServerHooks for OrderTracker {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 let order = BEFORE_ORDER.fetch_add(1, Ordering::SeqCst);
                 *self.before_order.lock().unwrap() = Some(order);
                 Ok(())
@@ -384,7 +489,8 @@ mod tests {
             .push_arc(tracker2.clone())
             .push_arc(tracker3.clone());
 
-        let mut ctx = make_tool_context("test");
+        let params = make_test_params("test");
+        let mut ctx = ToolCallContext::from_params(&params);
         stack.before_tool_call(&mut ctx).unwrap();
 
         let mut result_ctx = make_result_context("test");
@@ -406,7 +512,7 @@ mod tests {
         struct BlockingHook;
 
         impl ServerHooks for BlockingHook {
-            fn before_tool_call(&self, ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 ctx.block("Blocked by policy");
                 Ok(())
             }
@@ -421,7 +527,7 @@ mod tests {
         }
 
         impl ServerHooks for AfterBlockHook {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 *self.called.lock().unwrap() = true;
                 Ok(())
             }
@@ -439,7 +545,8 @@ mod tests {
             .push(BlockingHook)
             .push_arc(after_hook.clone());
 
-        let mut ctx = make_tool_context("test");
+        let params = make_test_params("test");
+        let mut ctx = ToolCallContext::from_params(&params);
         stack.before_tool_call(&mut ctx).unwrap();
 
         // Should be blocked
@@ -455,7 +562,7 @@ mod tests {
         struct MetadataWriter;
 
         impl ServerHooks for MetadataWriter {
-            fn before_tool_call(&self, ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 ctx.metadata
                     .insert("request_id".to_string(), Value::String("abc123".to_string()));
                 ctx.metadata
@@ -473,7 +580,7 @@ mod tests {
         }
 
         impl ServerHooks for MetadataReader {
-            fn before_tool_call(&self, ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 if let Some(Value::String(id)) = ctx.metadata.get("request_id") {
                     *self.found_request_id.lock().unwrap() = Some(id.clone());
                 }
@@ -493,7 +600,8 @@ mod tests {
             .push(MetadataWriter)
             .push_arc(reader.clone());
 
-        let mut ctx = make_tool_context("test");
+        let params = make_test_params("test");
+        let mut ctx = ToolCallContext::from_params(&params);
         stack.before_tool_call(&mut ctx).unwrap();
 
         // Reader should have found the metadata written by writer
@@ -508,7 +616,7 @@ mod tests {
         struct ErrorHook;
 
         impl ServerHooks for ErrorHook {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 Err(ErrorData::internal_error(
                     "Hook failed".to_string(),
                     None::<()>,
@@ -525,7 +633,7 @@ mod tests {
         }
 
         impl ServerHooks for NeverCalledHook {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 *self.called.lock().unwrap() = true;
                 Ok(())
             }
@@ -543,7 +651,8 @@ mod tests {
             .push(ErrorHook)
             .push_arc(never_called.clone());
 
-        let mut ctx = make_tool_context("test");
+        let params = make_test_params("test");
+        let mut ctx = ToolCallContext::from_params(&params);
         let result = stack.before_tool_call(&mut ctx);
 
         // Should return error

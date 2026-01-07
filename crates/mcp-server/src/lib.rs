@@ -29,7 +29,7 @@
 //! struct LoggingHooks;
 //!
 //! impl ServerHooks for LoggingHooks {
-//!     fn before_tool_call(&self, ctx: &mut ToolCallContext) -> Result<(), ErrorData> {
+//!     fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
 //!         tracing::info!("Calling: {}", ctx.tool_name);
 //!         Ok(())
 //!     }
