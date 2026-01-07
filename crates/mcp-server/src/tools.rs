@@ -204,9 +204,10 @@ pub async fn handle_tools_call(
             let contents = vec![Content::text(error_text)];
 
             let error_result = CallToolResult {
-                content: Some(contents),
+                content: contents,
                 structured_content: None,
                 is_error: Some(true),
+                meta: None,
             };
             Ok(serde_json::to_value(error_result)?)
         }
@@ -218,6 +219,7 @@ fn get_builtin_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: Cow::Borrowed("load-component"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Dynamically loads a new tool or component from either the filesystem or OCI registries.",
             )),
@@ -233,9 +235,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("unload-component"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Unloads a tool or component.",
             )),
@@ -251,9 +256,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("list-components"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Lists all currently loaded components or tools.",
             )),
@@ -267,9 +275,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("get-policy"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Gets the policy information for a specific component",
             )),
@@ -288,9 +299,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("grant-storage-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Grants storage access permission to a component, allowing it to read from and/or write to specific storage locations."
             )),
@@ -328,9 +342,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("grant-network-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Grants network access permission to a component, allowing it to make network requests to specific hosts."
             )),
@@ -360,9 +377,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("grant-environment-variable-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Grants environment variable access permission to a component, allowing it to access specific environment variables."
             )),
@@ -392,9 +412,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("revoke-storage-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Revokes all storage access permissions from a component for the specified URI path, removing both read and write access to that location."
             )),
@@ -424,9 +447,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("revoke-network-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Revokes network access permission from a component, removing its ability to make network requests to specific hosts."
             )),
@@ -456,9 +482,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("revoke-environment-variable-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Revokes environment variable access permission from a component, removing its ability to access specific environment variables."
             )),
@@ -488,9 +517,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("reset-permission"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Resets all permissions for a component, removing all granted permissions and returning it to the default state."
             )),
@@ -509,9 +541,12 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
         Tool {
             name: Cow::Borrowed("search-components"),
+            title: None,
             description: Some(Cow::Borrowed(
                 "Lists all known components that can be fetched and loaded. Optionally filter by a search query.",
             )),
@@ -530,6 +565,8 @@ fn get_builtin_tools() -> Vec<Tool> {
             ),
             output_schema: None,
             annotations: None,
+            icons: None,
+            meta: None,
         },
     ]
 }
@@ -630,9 +667,10 @@ pub(crate) async fn handle_search_component(
     let contents = vec![Content::text(status_text)];
 
     Ok(CallToolResult {
-        content: Some(contents),
+        content: contents,
         structured_content: None,
         is_error: None,
+        meta: None,
     })
 }
 
@@ -680,9 +718,10 @@ pub async fn handle_get_policy(
     let contents = vec![Content::text(status_text)];
 
     Ok(CallToolResult {
-        content: Some(contents),
+        content: contents,
         structured_content: None,
         is_error: None,
+        meta: None,
     })
 }
 
@@ -731,9 +770,10 @@ async fn handle_grant_permission_generic(
             let contents = vec![Content::text(status_text)];
 
             Ok(CallToolResult {
-                content: Some(contents),
+                content: contents,
                 structured_content: None,
                 is_error: None,
+                meta: None,
             })
         }
         Err(e) => {
@@ -833,9 +873,10 @@ async fn handle_revoke_permission_generic(
             let contents = vec![Content::text(status_text)];
 
             Ok(CallToolResult {
-                content: Some(contents),
+                content: contents,
                 structured_content: None,
                 is_error: None,
+                meta: None,
             })
         }
         Err(e) => {
@@ -900,9 +941,10 @@ pub async fn handle_revoke_storage_permission(
             let contents = vec![Content::text(status_text)];
 
             Ok(CallToolResult {
-                content: Some(contents),
+                content: contents,
                 structured_content: None,
                 is_error: None,
+                meta: None,
             })
         }
         Err(e) => {
@@ -969,9 +1011,10 @@ pub async fn handle_reset_permission(
             let contents = vec![Content::text(status_text)];
 
             Ok(CallToolResult {
-                content: Some(contents),
+                content: contents,
                 structured_content: None,
                 is_error: None,
+                meta: None,
             })
         }
         Err(e) => {

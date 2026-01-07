@@ -4,13 +4,14 @@
 //! Filesystem helpers that manage component artifacts, metadata, and cache
 //! layout for the lifecycle manager.
 
+use std::collections::HashMap;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::spawn_blocking;
 
 use crate::loader::DownloadedResource;
@@ -22,6 +23,7 @@ pub struct ComponentStorage {
     root: PathBuf,
     downloads_dir: PathBuf,
     downloads_semaphore: Arc<Semaphore>,
+    component_locks: Arc<std::sync::Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
 }
 
 impl ComponentStorage {
@@ -47,7 +49,16 @@ impl ComponentStorage {
             root,
             downloads_dir,
             downloads_semaphore: Arc::new(Semaphore::new(max_concurrent_downloads.max(1))),
+            component_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
+    }
+
+    fn lock_for(&self, component_id: &str) -> Arc<AsyncMutex<()>> {
+        let mut locks = self.component_locks.lock().expect("component lock poisoned");
+        locks
+            .entry(component_id.to_string())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     /// Root component directory containing components.
@@ -102,9 +113,11 @@ impl ComponentStorage {
         component_id: &str,
         resource: DownloadedResource,
     ) -> Result<PathBuf> {
+        let component_lock = self.lock_for(component_id);
+        let _component_guard = component_lock.lock().await;
         let _permit = self.acquire_download_permit().await;
 
-        self.remove_component_artifacts(component_id).await?;
+        self.remove_component_artifacts_inner(component_id).await?;
 
         resource.copy_to(self.root()).await.with_context(|| {
             format!(
@@ -118,6 +131,12 @@ impl ComponentStorage {
 
     /// Remove persisted component artifacts (wasm, metadata, cache) if they exist.
     pub async fn remove_component_artifacts(&self, component_id: &str) -> Result<()> {
+        let component_lock = self.lock_for(component_id);
+        let _component_guard = component_lock.lock().await;
+        self.remove_component_artifacts_inner(component_id).await
+    }
+
+    async fn remove_component_artifacts_inner(&self, component_id: &str) -> Result<()> {
         self.remove_if_exists(
             &self.component_path(component_id),
             "component file",
