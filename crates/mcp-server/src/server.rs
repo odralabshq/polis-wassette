@@ -9,6 +9,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use async_trait::async_trait;
 
 use rmcp::model::{
     CallToolRequestParam, CallToolResult, ErrorData, ListPromptsResult, ListResourcesResult,
@@ -136,7 +137,7 @@ impl ServerHandler for McpServer {
             let tool_name = tool_ctx.tool_name.clone();
 
             // Run before hooks
-            if let Err(e) = hooks.before_tool_call(&mut tool_ctx) {
+            if let Err(e) = hooks.before_tool_call(&mut tool_ctx).await {
                 tracing::error!(error = ?e, "Hook before_tool_call failed");
                 return Err(e);
             }
@@ -179,7 +180,7 @@ impl ServerHandler for McpServer {
                         duration,
                     };
 
-                    if let Err(e) = hooks.after_tool_call(&mut result_ctx) {
+                    if let Err(e) = hooks.after_tool_call(&mut result_ctx).await {
                         tracing::error!(error = ?e, "Hook after_tool_call failed");
                         return Err(e);
                     }
@@ -336,6 +337,7 @@ mod tests {
     use rmcp::model::Tool;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use async_trait::async_trait;
 
     // Helper to create a test LifecycleManager
     async fn create_test_lifecycle_manager() -> LifecycleManager {
@@ -457,13 +459,14 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ServerHooks for TrackingHook {
-        fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+        async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
             self.before_call_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
-        fn after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
+        async fn after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
             self.after_call_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
@@ -511,8 +514,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ServerHooks for BlockingHook {
-        fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+        async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
             ctx.block(&self.block_reason);
             Ok(())
         }
@@ -547,8 +551,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ServerHooks for ArgumentModifyingHook {
-        fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+        async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
             let args = ctx.arguments_mut().get_or_insert_with(serde_json::Map::new);
             args.insert(self.key_to_add.clone(), self.value_to_add.clone());
             Ok(())
@@ -582,6 +587,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ServerHooks for ToolFilteringHook {
         fn on_list_tools(&self, tools: &mut Vec<Tool>) {
             tools.retain(|t| !t.name.as_ref().starts_with(&self.prefix_to_hide));
@@ -783,8 +789,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ServerHooks for ErrorHook {
-        fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+        async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
             Err(ErrorData::internal_error(
                 self.error_message.clone(),
                 None::<serde_json::Value>,
@@ -823,8 +830,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ServerHooks for MetadataHook {
-        fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+        async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
             ctx.metadata.insert(self.key.clone(), self.value.clone());
             Ok(())
         }

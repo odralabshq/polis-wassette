@@ -10,6 +10,7 @@ use rmcp::model::{CallToolRequestParam, CallToolResult, ErrorData, Tool};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use async_trait::async_trait;
 
 /// Context passed to hooks before a tool call.
 #[derive(Debug)]
@@ -121,16 +122,19 @@ pub struct ToolResultContext {
 /// ```ignore
 /// use mcp_server::{ServerHooks, ToolCallContext};
 /// use rmcp::model::ErrorData;
+/// use async_trait::async_trait;
 ///
 /// struct LoggingHooks;
 ///
+/// #[async_trait]
 /// impl ServerHooks for LoggingHooks {
-///     fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+///     async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
 ///         tracing::info!("Calling tool: {}", ctx.tool_name);
 ///         Ok(())
 ///     }
 /// }
 /// ```
+#[async_trait]
 pub trait ServerHooks: Send + Sync {
     /// Called before a tool is executed.
     ///
@@ -141,7 +145,7 @@ pub trait ServerHooks: Send + Sync {
     ///
     /// Note: Arguments are lazily cloned only when `arguments_mut()` is called,
     /// so read-only hooks should use `ctx.arguments()` to avoid unnecessary cloning.
-    fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+    async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
         Ok(())
     }
 
@@ -151,7 +155,7 @@ pub trait ServerHooks: Send + Sync {
     /// - Transform or filter results
     /// - Log execution metrics
     /// - Audit trail
-    fn after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
+    async fn after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
         Ok(())
     }
 
@@ -170,6 +174,7 @@ pub trait ServerHooks: Send + Sync {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoOpHooks;
 
+#[async_trait]
 impl ServerHooks for NoOpHooks {}
 
 /// A stack of middleware that executes hooks in order.
@@ -229,11 +234,12 @@ impl MiddlewareStack {
     }
 }
 
+#[async_trait]
 impl ServerHooks for MiddlewareStack {
-    fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+    async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
         for middleware in &self.middlewares {
             tracing::trace!(hook = middleware.name(), tool = %ctx.tool_name, "before_tool_call");
-            middleware.before_tool_call(ctx)?;
+            middleware.before_tool_call(ctx).await?;
             if ctx.blocked {
                 tracing::debug!(
                     hook = middleware.name(),
@@ -247,11 +253,11 @@ impl ServerHooks for MiddlewareStack {
         Ok(())
     }
 
-    fn after_tool_call(&self, ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
+    async fn after_tool_call(&self, ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
         // Run in reverse order (like middleware unwinding)
         for middleware in self.middlewares.iter().rev() {
             tracing::trace!(hook = middleware.name(), tool = %ctx.tool_name, "after_tool_call");
-            middleware.after_tool_call(ctx)?;
+            middleware.after_tool_call(ctx).await?;
         }
         Ok(())
     }
@@ -286,6 +292,7 @@ mod tests {
     use super::*;
     use rmcp::model::Content;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use async_trait::async_trait;
 
     // Helper to create test params
     fn make_test_params(name: &str) -> CallToolRequestParam {
@@ -445,8 +452,8 @@ mod tests {
         assert!(args.contains_key("arg2"));
     }
 
-    #[test]
-    fn test_middleware_stack_execution_order() {
+    #[tokio::test]
+    async fn test_middleware_stack_execution_order() {
         // Track execution order using atomic counter
         static BEFORE_ORDER: AtomicUsize = AtomicUsize::new(0);
         static AFTER_ORDER: AtomicUsize = AtomicUsize::new(0);
@@ -457,14 +464,15 @@ mod tests {
             after_order: std::sync::Mutex<Option<usize>>,
         }
 
+        #[async_trait]
         impl ServerHooks for OrderTracker {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 let order = BEFORE_ORDER.fetch_add(1, Ordering::SeqCst);
                 *self.before_order.lock().unwrap() = Some(order);
                 Ok(())
             }
 
-            fn after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
+            async fn after_tool_call(&self, _ctx: &mut ToolResultContext) -> Result<(), ErrorData> {
                 let order = AFTER_ORDER.fetch_add(1, Ordering::SeqCst);
                 *self.after_order.lock().unwrap() = Some(order);
                 Ok(())
@@ -502,10 +510,10 @@ mod tests {
 
         let params = make_test_params("test");
         let mut ctx = ToolCallContext::from_params(&params);
-        stack.before_tool_call(&mut ctx).unwrap();
+        stack.before_tool_call(&mut ctx).await.unwrap();
 
         let mut result_ctx = make_result_context("test");
-        stack.after_tool_call(&mut result_ctx).unwrap();
+        stack.after_tool_call(&mut result_ctx).await.unwrap();
 
         // Before hooks run in order: 1, 2, 3
         assert_eq!(*tracker1.before_order.lock().unwrap(), Some(0));
@@ -518,12 +526,13 @@ mod tests {
         assert_eq!(*tracker1.after_order.lock().unwrap(), Some(2));
     }
 
-    #[test]
-    fn test_middleware_stack_blocking_behavior() {
+    #[tokio::test]
+    async fn test_middleware_stack_blocking_behavior() {
         struct BlockingHook;
 
+        #[async_trait]
         impl ServerHooks for BlockingHook {
-            fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 ctx.block("Blocked by policy");
                 Ok(())
             }
@@ -537,8 +546,9 @@ mod tests {
             called: std::sync::Mutex<bool>,
         }
 
+        #[async_trait]
         impl ServerHooks for AfterBlockHook {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 *self.called.lock().unwrap() = true;
                 Ok(())
             }
@@ -558,7 +568,7 @@ mod tests {
 
         let params = make_test_params("test");
         let mut ctx = ToolCallContext::from_params(&params);
-        stack.before_tool_call(&mut ctx).unwrap();
+        stack.before_tool_call(&mut ctx).await.unwrap();
 
         // Should be blocked
         assert!(ctx.blocked);
@@ -568,12 +578,13 @@ mod tests {
         assert!(!*after_hook.called.lock().unwrap());
     }
 
-    #[test]
-    fn test_metadata_passing_between_hooks() {
+    #[tokio::test]
+    async fn test_metadata_passing_between_hooks() {
         struct MetadataWriter;
 
+        #[async_trait]
         impl ServerHooks for MetadataWriter {
-            fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 ctx.metadata
                     .insert("request_id".to_string(), Value::String("abc123".to_string()));
                 ctx.metadata
@@ -590,8 +601,9 @@ mod tests {
             found_request_id: std::sync::Mutex<Option<String>>,
         }
 
+        #[async_trait]
         impl ServerHooks for MetadataReader {
-            fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 if let Some(Value::String(id)) = ctx.metadata.get("request_id") {
                     *self.found_request_id.lock().unwrap() = Some(id.clone());
                 }
@@ -613,7 +625,7 @@ mod tests {
 
         let params = make_test_params("test");
         let mut ctx = ToolCallContext::from_params(&params);
-        stack.before_tool_call(&mut ctx).unwrap();
+        stack.before_tool_call(&mut ctx).await.unwrap();
 
         // Reader should have found the metadata written by writer
         assert_eq!(
@@ -622,12 +634,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_error_handling_in_hooks() {
+    #[tokio::test]
+    async fn test_error_handling_in_hooks() {
         struct ErrorHook;
 
+        #[async_trait]
         impl ServerHooks for ErrorHook {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 Err(ErrorData::internal_error(
                     "Hook failed".to_string(),
                     None::<serde_json::Value>,
@@ -643,8 +656,9 @@ mod tests {
             called: std::sync::Mutex<bool>,
         }
 
+        #[async_trait]
         impl ServerHooks for NeverCalledHook {
-            fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+            async fn before_tool_call(&self, _ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
                 *self.called.lock().unwrap() = true;
                 Ok(())
             }
@@ -664,7 +678,7 @@ mod tests {
 
         let params = make_test_params("test");
         let mut ctx = ToolCallContext::from_params(&params);
-        let result = stack.before_tool_call(&mut ctx);
+        let result = stack.before_tool_call(&mut ctx).await;
 
         // Should return error
         assert!(result.is_err());
@@ -701,6 +715,7 @@ mod tests {
     fn test_on_list_tools_filtering() {
         struct ToolFilter;
 
+        #[async_trait]
         impl ServerHooks for ToolFilter {
             fn on_list_tools(&self, tools: &mut Vec<Tool>) {
                 tools.retain(|t| !t.name.as_ref().starts_with("internal_"));

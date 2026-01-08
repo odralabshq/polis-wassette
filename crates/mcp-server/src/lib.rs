@@ -25,11 +25,13 @@
 //! ```ignore
 //! use mcp_server::{McpServer, ServerHooks, ToolCallContext, MiddlewareStack};
 //! use rmcp::model::ErrorData;
+//! use async_trait::async_trait;
 //!
 //! struct LoggingHooks;
 //!
+//! #[async_trait]
 //! impl ServerHooks for LoggingHooks {
-//!     fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
+//!     async fn before_tool_call(&self, ctx: &mut ToolCallContext<'_>) -> Result<(), ErrorData> {
 //!         tracing::info!("Calling: {}", ctx.tool_name);
 //!         Ok(())
 //!     }
