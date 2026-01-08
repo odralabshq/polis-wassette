@@ -11,6 +11,7 @@ rmcp = { workspace = true }
 wassette = { workspace = true }
 tracing = { workspace = true, features = ["attributes"] }
 futures = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
