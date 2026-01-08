@@ -341,20 +341,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_noop_hooks_default_behavior() {
+    #[tokio::test]
+    async fn test_noop_hooks_default_behavior() {
         let hooks = NoOpHooks;
 
         // before_tool_call should succeed without modification
         let params = make_test_params("test_tool");
         let mut ctx = ToolCallContext::from_params(&params);
-        assert!(hooks.before_tool_call(&mut ctx).is_ok());
+        assert!(hooks.before_tool_call(&mut ctx).await.is_ok());
         assert!(!ctx.blocked);
         assert!(ctx.block_reason.is_none());
 
         // after_tool_call should succeed without modification
         let mut result_ctx = make_result_context("test_tool");
-        assert!(hooks.after_tool_call(&mut result_ctx).is_ok());
+        assert!(hooks.after_tool_call(&mut result_ctx).await.is_ok());
 
         // on_list_tools should not modify the list
         let mut tools = vec![make_tool("tool1")];
