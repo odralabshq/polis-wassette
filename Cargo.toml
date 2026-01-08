@@ -13,6 +13,7 @@ license-file = "LICENSE"
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 component2json = { path = "crates/component2json" }
 etcetera = "0.11"
 futures = "0.3"
