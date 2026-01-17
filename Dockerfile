@@ -16,6 +16,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY crates ./crates
 COPY build.rs ./
+COPY component-registry.json ./
 
 # Build the release binary
 RUN cargo build --release --bin wassette
@@ -26,8 +27,8 @@ FROM debian:bookworm-slim
 # Install runtime dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates \
-        libssl3 && \
+    ca-certificates \
+    libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for running Wassette
